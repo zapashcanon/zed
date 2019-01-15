@@ -87,7 +87,7 @@ let match_by_regexp re rope idx =
         None
     | Some arr ->
         match arr.(0) with
-          | Some(_zip1, zip2) ->
+          | Some(_, zip2) ->
               Some(Zed_rope.Zip.offset zip2)
           | None ->
               None
@@ -163,11 +163,9 @@ let get_selection engine = S.value engine.selection
 let set_selection engine state = engine.set_selection state
 
 let get_line e i =
-  let txt = text e in
   let lines = lines e in
   let start = Zed_lines.line_start lines i in
-  let stop = Zed_lines.line_stop lines i in
-  Zed_rope.sub txt start (stop - start)
+  Zed_rope.sub (text e) start ((Zed_lines.line_stop lines i) - start)
 
 let update engine cursors =
   E.select (
@@ -237,13 +235,9 @@ let prev_line_n ctx n =
   end
 
 let move_line ctx delta =
-  match delta with
-    | _ when delta < 0 ->
-        prev_line_n ctx (-delta)
-    | _ when delta > 0 ->
-        next_line_n ctx delta
-    | _ ->
-        ()
+  if delta < 0 then prev_line_n ctx (-delta)
+  else if delta > 0 then next_line_n ctx delta
+  else ()
 
 let position ctx =
   Zed_cursor.get_position ctx.cursor
@@ -255,21 +249,24 @@ let column ctx =
   Zed_cursor.get_column ctx.cursor
 
 let at_bol ctx =
-  Zed_cursor.get_column ctx.cursor = 0
+  column ctx = 0
+
+let at_pos ctx pos =
+  pos = position ctx
 
 let at_eol ctx =
-  let position = Zed_cursor.get_position ctx.cursor in
-  let index = Zed_cursor.get_line ctx.cursor in
-  if index = Zed_lines.count ctx.edit.lines then
-    position = Zed_rope.length ctx.edit.text
-  else
-    position = Zed_lines.line_start ctx.edit.lines (index + 1) - 1
+  let index = line ctx in
+  let eol =
+    if index = Zed_lines.count ctx.edit.lines then
+      Zed_rope.length ctx.edit.text
+    else
+      Zed_lines.line_start ctx.edit.lines (index + 1) - 1
+  in
+  at_pos ctx eol
 
-let at_bot ctx =
-  Zed_cursor.get_position ctx.cursor = 0
+let at_bot ctx = at_pos ctx 0
 
-let at_eot ctx =
-  Zed_cursor.get_position ctx.cursor = Zed_rope.length ctx.edit.text
+let at_eot ctx = at_pos ctx (Zed_rope.length ctx.edit.text)
 
 let modify { edit ; _ } text lines position new_position added removed =
   if edit.undo_size > 0 then begin
@@ -282,80 +279,68 @@ let modify { edit ; _ } text lines position new_position added removed =
   end;
   edit.send_changes (position, added, removed)
 
+let assert_check_and_editable_pos ctx position i =
+  if ctx.check || not (ctx.edit.editable position i) then raise Cannot_edit
+
 let insert ctx rope =
   let position = Zed_cursor.get_position ctx.cursor in
-  if not ctx.check || ctx.edit.editable position 0 then begin
-    let len = Zed_rope.length rope in
-    let text = ctx.edit.text and lines = ctx.edit.lines in
-    if S.value ctx.edit.erase_mode then begin
-      let text_len = Zed_rope.length ctx.edit.text in
-      if position + len > text_len then begin
-        ctx.edit.text <- Zed_rope.replace text position (text_len - position) rope;
-        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position (text_len - position) (Zed_lines.of_rope rope);
-        modify ctx text lines position position len (text_len - position)
-      end else begin
-        ctx.edit.text <- Zed_rope.replace text position len rope;
-        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope rope);
-        modify ctx text lines position position len len;
-      end;
-      move ctx len
-    end else begin
-      ctx.edit.text <- Zed_rope.insert ctx.edit.text position rope;
-      ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope rope);
-      modify ctx text lines position position len 0;
-      move ctx len
-    end
-  end else
-    raise Cannot_edit
+  assert_check_and_editable_pos ctx position 0;
+  let len = Zed_rope.length rope in
+  let text = ctx.edit.text and lines = ctx.edit.lines in
+  let lines' = Zed_lines.of_rope rope in
+  if S.value ctx.edit.erase_mode then begin
+    let len' = min len (Zed_rope.length ctx.edit.text - position) in
+    ctx.edit.text <- Zed_rope.replace text position len' rope;
+    ctx.edit.lines <- Zed_lines.replace lines position len' lines';
+    modify ctx text lines position position len len';
+  end else begin
+    ctx.edit.text <- Zed_rope.insert text position rope;
+    ctx.edit.lines <- Zed_lines.insert lines position lines';
+    modify ctx text lines position position len 0;
+  end;
+  move ctx len
 
 let insert_no_erase ctx rope =
   let position = Zed_cursor.get_position ctx.cursor in
-  if not ctx.check || ctx.edit.editable position 0 then begin
-    let len = Zed_rope.length rope and text = ctx.edit.text and lines = ctx.edit.lines in
-    ctx.edit.text <- Zed_rope.insert text position rope;
-    ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope rope);
-    modify ctx text lines position position len 0;
-    move ctx len
-  end else
-    raise Cannot_edit
+  assert_check_and_editable_pos ctx position 0;
+  let text = ctx.edit.text and lines = ctx.edit.lines in
+  ctx.edit.text <- Zed_rope.insert text position rope;
+  ctx.edit.lines <- Zed_lines.insert lines position (Zed_lines.of_rope rope);
+  let len = Zed_rope.length rope in
+  modify ctx text lines position position len 0;
+  move ctx len
 
 let remove_next ctx len =
   let position = Zed_cursor.get_position ctx.cursor in
-  let text_len = Zed_rope.length ctx.edit.text in
-  let len = if position + len > text_len then text_len - position else len in
-  if not ctx.check || ctx.edit.editable position len then begin
-    let text = ctx.edit.text and lines = ctx.edit.lines in
-    ctx.edit.text <- Zed_rope.remove text position len;
-    ctx.edit.lines <- Zed_lines.remove ctx.edit.lines position len;
-    modify ctx text lines position position 0 len;
-  end else
-    raise Cannot_edit
+  let len = min len (Zed_rope.length ctx.edit.text - position) in
+  assert_check_and_editable_pos ctx position len;
+  let text = ctx.edit.text and lines = ctx.edit.lines in
+  ctx.edit.text <- Zed_rope.remove text position len;
+  ctx.edit.lines <- Zed_lines.remove ctx.edit.lines position len;
+  modify ctx text lines position position 0 len
 
 let remove_prev ctx len =
   let position = Zed_cursor.get_position ctx.cursor in
   let len = min position len in
-  if not ctx.check || ctx.edit.editable (position - len) len then begin
-    let text = ctx.edit.text and lines = ctx.edit.lines in
-    ctx.edit.text <- Zed_rope.remove text (position - len) len;
-    ctx.edit.lines <- Zed_lines.remove ctx.edit.lines (position - len) len;
-    modify ctx text lines (position - len) position 0 len;
-  end else
-    raise Cannot_edit
+  assert_check_and_editable_pos ctx (position - len) len;
+  let text = ctx.edit.text and lines = ctx.edit.lines in
+  let i = position - len in
+  ctx.edit.text <- Zed_rope.remove text i len;
+  ctx.edit.lines <- Zed_lines.remove lines i len;
+  modify ctx text lines i position 0 len
 
 let remove = remove_next
 
 let replace ctx len rope =
   let position = Zed_cursor.get_position ctx.cursor in
-  let text_len = Zed_rope.length ctx.edit.text in
-  let len = if position + len > text_len then text_len - position else len in
-  if not ctx.check || ctx.edit.editable position len then begin
-    let rope_len = Zed_rope.length rope and text = ctx.edit.text and lines = ctx.edit.lines in
-    ctx.edit.text <- Zed_rope.replace text position len rope;
-    ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope rope);
-    modify ctx text lines position position rope_len len;
-    move ctx rope_len
-  end else
-    raise Cannot_edit
+  let len = min len (Zed_rope.length ctx.edit.text - position) in
+  assert_check_and_editable_pos ctx position len;
+  let text = ctx.edit.text and lines = ctx.edit.lines in
+  ctx.edit.text <- Zed_rope.replace text position len rope;
+  ctx.edit.lines <- Zed_lines.replace lines position len (Zed_lines.of_rope rope);
+  let rope_len = Zed_rope.length rope in
+  modify ctx text lines position position rope_len len;
+  move ctx rope_len
 
 let newline_rope =
   Zed_rope.singleton (UChar.of_char '\n')
@@ -363,11 +348,14 @@ let newline_rope =
 let newline ctx =
   insert ctx newline_rope
 
+let move_if_not_at_eot i ctx =
+  if not (at_eot ctx) then move ctx i
+
 let next_char ctx =
-  if not (at_eot ctx) then move ctx 1
+  move_if_not_at_eot 1 ctx
 
 let prev_char ctx =
-  if not (at_bot ctx) then move ctx (-1)
+  move_if_not_at_eot (-1) ctx
 
 let next_line ctx =
   let index = Zed_cursor.get_line ctx.cursor in
@@ -440,16 +428,16 @@ let delete_prev_line ctx =
 let kill_next_line ctx =
   let position = Zed_cursor.get_position ctx.cursor in
   let index = Zed_cursor.get_line ctx.cursor in
-  if index = Zed_lines.count ctx.edit.lines then begin
-    ctx.edit.clipboard.clipboard_set (Zed_rope.after ctx.edit.text position);
-    ctx.edit.set_selection false;
-    remove ctx (Zed_rope.length ctx.edit.text - position)
-  end else begin
-    let len = Zed_lines.line_start ctx.edit.lines (index + 1) - position in
-    ctx.edit.clipboard.clipboard_set (Zed_rope.sub ctx.edit.text position len);
-    ctx.edit.set_selection false;
-    remove ctx len
-  end
+  let clipboard_i, rm_i =
+    if index = Zed_lines.count ctx.edit.lines then
+      Zed_rope.after ctx.edit.text position, Zed_rope.length ctx.edit.text - position
+    else
+      let len = Zed_lines.line_start ctx.edit.lines (index + 1) - position in
+      Zed_rope.sub ctx.edit.text position len, len
+  in
+  ctx.edit.clipboard.clipboard_set clipboard_i;
+  ctx.edit.set_selection false;
+  remove ctx rm_i
 
 let kill_prev_line ctx =
   let position = Zed_cursor.get_position ctx.cursor in
@@ -574,14 +562,14 @@ let uppercase_word ctx =
 
 let next_word ctx =
   match search_word_forward ctx with
-    | Some(_idx1, idx2) ->
+    | Some(_, idx2) ->
         goto ctx idx2
     | None ->
         goto ctx (Zed_rope.length ctx.edit.text)
 
 let prev_word ctx =
   match search_word_backward ctx with
-    | Some(idx1, _idx2) ->
+    | Some(idx1, _) ->
         goto ctx idx1
     | None ->
         goto ctx 0
@@ -589,7 +577,7 @@ let prev_word ctx =
 let delete_next_word ctx =
   let position = Zed_cursor.get_position ctx.cursor in
   let word_end = match search_word_forward ctx with
-    | Some(_idx1, idx2) ->
+    | Some(_, idx2) ->
         idx2
     | None ->
       Zed_rope.length ctx.edit.text
@@ -599,7 +587,7 @@ let delete_next_word ctx =
 let delete_prev_word ctx =
   let position = Zed_cursor.get_position ctx.cursor in
   let start = match search_word_backward ctx with
-    | Some(idx1, _idx2) ->
+    | Some(idx1, _) ->
         idx1
     | None ->
         0
@@ -609,7 +597,7 @@ let delete_prev_word ctx =
 let kill_next_word ctx =
   let position = Zed_cursor.get_position ctx.cursor in
   let word_end = match search_word_forward ctx with
-    | Some(_idx1, idx2) ->
+    | Some(_, idx2) ->
         idx2
     | None ->
       Zed_rope.length ctx.edit.text
@@ -621,7 +609,7 @@ let kill_next_word ctx =
 let kill_prev_word ctx =
   let position = Zed_cursor.get_position ctx.cursor in
   let start = match search_word_backward ctx with
-    | Some(idx1, _idx2) ->
+    | Some(idx1, _) ->
         idx1
     | None ->
         0

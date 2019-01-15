@@ -28,32 +28,33 @@ type t = {
   set_wanted_column : int -> unit;
 }
 
+let assert_in_bounds pos len =
+  if pos < 0 || pos > len then raise Out_of_bounds
+
 let create length changes get_lines position wanted_column =
-  if position < 0 || position > length then raise Out_of_bounds;
+  assert_in_bounds position length;
   let length = ref length in
   let user_moves, send = E.create () in
-  let update_position position action =
-    match action with
-    | User_move pos -> pos
-    | Text_modification (start, added, removed) ->
-      let delta = added - removed in
-      length := !length + delta;
-      if !length < 0 then raise Out_of_bounds;
-      (* Move the cursor if it is after the start of the changes. *)
-      if position > start then begin
-        if delta >= 0 then
-          (* Text has been inserted, advance the cursor. *)
-          position + delta
-        else if position < start - delta  then
-          (* Text has been removed and the removed block contains the
-             cursor, move it at the beginning of the removed block. *)
-          start
-        else
-          (* Text has been removed before the cursor, move back the
-             cursor. *)
-          position + delta
-      end else
-        position
+  let update_position position = function
+  | User_move pos -> pos
+  | Text_modification (start, added, removed) ->
+    let delta = added - removed in
+    length := !length + delta;
+    if !length < 0 then raise Out_of_bounds;
+    (* Move the cursor if it is after the start of the changes. *)
+    if position > start then begin
+      if delta >= 0 then
+        (* Text has been inserted, advance the cursor. *)
+        position + delta
+      else if position < start - delta  then
+        (* Text has been removed and the removed block contains the
+           cursor, move it at the beginning of the removed block. *)
+        start
+      else
+        (* Text has been removed before the cursor, move back the cursor. *)
+        position + delta
+    end else
+      position
   in
   let text_modifications = E.map (fun x -> Text_modification x) changes in
   let position =
@@ -99,19 +100,10 @@ let wanted_column cursor = cursor.wanted_column
 let get_wanted_column cursor = S.value cursor.wanted_column
 let set_wanted_column cursor column = cursor.set_wanted_column column
 
-let move cursor ?(set_wanted_column=true) delta =
-  let new_position = S.value cursor.position + delta in
-  if new_position < 0 || new_position > !(cursor.length) then
-    raise Out_of_bounds
-  else begin
-    cursor.send (User_move new_position);
-    if set_wanted_column then cursor.set_wanted_column (S.value cursor.column)
-  end
-
 let goto cursor ?(set_wanted_column=true) position =
-  if position < 0 || position > !(cursor.length) then
-    raise Out_of_bounds
-  else begin
-    cursor.send (User_move position);
-    if set_wanted_column then cursor.set_wanted_column (S.value cursor.column)
-  end
+  assert_in_bounds position !(cursor.length);
+  cursor.send (User_move position);
+  if set_wanted_column then cursor.set_wanted_column (S.value cursor.column)
+
+let move cursor ?(set_wanted_column=true) delta =
+  goto cursor ~set_wanted_column (S.value cursor.position + delta)

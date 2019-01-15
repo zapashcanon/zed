@@ -20,7 +20,7 @@ let convert_success arr =
   Array.map
     (function
        | Some sub ->
-           let _rope, zip1, zip2 = Re.SubText.context sub in
+           let _, zip1, zip2 = Re.SubText.context sub in
            Some(zip1, zip2)
        | None ->
            None)

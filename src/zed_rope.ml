@@ -101,7 +101,7 @@ let rec balance_rec forest rope =
   match rope with
     | Leaf _ ->
         concat_forest_until forest empty 2 rope
-    | Node(_depth, _len_l, rope_l, _len_r, rope_r) ->
+    | Node(_, _, rope_l, _, rope_r) ->
         balance_rec forest rope_l;
         balance_rec forest rope_r
 
@@ -164,7 +164,7 @@ let rec unsafe_get idx rope =
   match rope with
     | Leaf(text, _) ->
         Zed_utf8.get text idx
-    | Node(_, len_l, rope_l, _len_r, rope_r) ->
+    | Node(_, len_l, rope_l, _, rope_r) ->
         if idx < len_l then
           unsafe_get idx rope_l
         else
